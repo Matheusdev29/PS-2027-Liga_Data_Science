@@ -1,0 +1,17 @@
+#ambiente virtual
+venv/
+.venv/
+env/
+
+# Cache do Python
+__pycache__/
+*.pyc
+
+
+  # Configurações locais do Streamlit (opções de tema ou porta local)
+.streamlit/config.toml
+.streamlit/secrets.toml
+
+  # Arquivos do sistema operacional
+.DS_Store
+Thumbs.db
