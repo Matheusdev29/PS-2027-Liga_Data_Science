@@ -31,15 +31,15 @@ A Plataforma Digital para Processo Seletivo centraliza o recebimento de candidat
 # Como Executar o Projeto
 * **Clone o repositório:**
   Bash
-    git clone https://github.com/seu-usuario/seu-repositorio.git
-    cd seu-repositorio
+    git clone https://github.com/Matheusdev29/PS-2027-Liga_Data_Science.git
+    cd PS-2027-Liga_Data_Science
   
-*  **Crie um ambiente virtual (opcional, mas recomendado):**
+*  **Crie um ambiente virtual (opcional, mas recomendado, criar somente uma vez):**
   Bash
     python -m venv venv
     source venv/bin/activate  # Linux/Mac
     venv\Scripts\activate     # Windows
-  
+  para desativar ambiente virtual **deactivate**
 *  **Instale as dependências:**
   Bash
    pip install -r requirements.txt
