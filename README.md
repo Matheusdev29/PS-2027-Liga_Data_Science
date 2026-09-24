@@ -29,17 +29,20 @@ A Plataforma Digital para Processo Seletivo centraliza o recebimento de candidat
 ---
 
 # Como Executar o Projeto
-* **Clone o repositório:**
+* **instale streamlit:**
   Bash
-    git clone https://github.com/Matheusdev29/PS-2027-Liga_Data_Science.git
-    cd PS-2027-Liga_Data_Science
-  
+    pip install streamlit
 *  **Crie um ambiente virtual (opcional, mas recomendado, criar somente uma vez):**
   Bash
    * python -m venv venv
    * source venv/bin/activate  # Linux/Mac
    * venv\Scripts\activate     # Windows
    *para desativar ambiente virtual **deactivate**
+* **Clone o repositório:**
+  Bash
+    git clone https://github.com/Matheusdev29/PS-2027-Liga_Data_Science.git
+    cd PS-2027-Liga_Data_Science
+  
 *  **Instale as dependências:**
   Bash
    pip install -r requirements.txt
