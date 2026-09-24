@@ -36,10 +36,10 @@ A Plataforma Digital para Processo Seletivo centraliza o recebimento de candidat
   
 *  **Crie um ambiente virtual (opcional, mas recomendado, criar somente uma vez):**
   Bash
-    python -m venv venv
-    source venv/bin/activate  # Linux/Mac
-    venv\Scripts\activate     # Windows
-  para desativar ambiente virtual **deactivate**
+   * python -m venv venv
+   * source venv/bin/activate  # Linux/Mac
+   * venv\Scripts\activate     # Windows
+   *para desativar ambiente virtual **deactivate**
 *  **Instale as dependências:**
   Bash
    pip install -r requirements.txt
