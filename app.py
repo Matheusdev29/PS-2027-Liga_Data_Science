@@ -8,7 +8,7 @@ pagina_inicio = st.Page(
 
 pagina_formulario = st.Page(
     page="paginas/formulario.py",
-    title="Formulário"    
+    title="Formulário"
 )
 
 pg = st.navigation(
