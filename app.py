@@ -11,10 +11,16 @@ pagina_formulario = st.Page(
     title="Formulário"
 )
 
+pagina_painel = st.Page(
+    page="paginas/painel.py",
+    title="Painel"
+)
+
 pg = st.navigation(
     {
         "Inicio": [pagina_inicio],
         "Formulário": [pagina_formulario],
+        "Painel": [pagina_painel]
     }
 )
 
