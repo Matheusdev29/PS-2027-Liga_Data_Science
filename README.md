@@ -51,7 +51,7 @@ A Plataforma Digital para Processo Seletivo centraliza o recebimento de candidat
   Bash
     streamlit run app.py
 
-# Score de candidatos — Liga de Data Science
+# Score de candidatos - Liga de Data Science
  
 Pontua candidatos por área (RH, Projetos, Marketing, Training) e calcula o fit com os valores da liga a partir das respostas do formulário.
  
