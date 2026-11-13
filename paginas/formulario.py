@@ -1,28 +1,185 @@
-import streamlit as st
+import os
+import re
+from datetime import datetime
 import pandas as pd
-st.title("Formulário")
-st.write("Responda com sinceridade")
+import streamlit as st
+
+ARQUIVO_CSV = "inscricoes.csv"
+
+PERGUNTAS_OBJETIVAS = {
+    "obj_1": "Gosto de ouvir pessoas, mediar conflitos e cuidar do clima de uma equipe.",
+    "obj_2": "Tenho facilidade para organizar cronogramas, cobrar prazos e acompanhar metas.",
+    "obj_3": "Gosto de estudar assuntos técnicos a fundo para ensinar e capacitar outras pessoas.",
+    "obj_4": "Tenho interesse em criação de conteúdo, identidade visual e estratégias de divulgação.",
+    "obj_5": "Prefiro resolver problemas práticos com entregas bem definidas e contato com clientes/parceiros.",
+    "obj_6": "Sinto-me motivado(a) planejando dinâmicas de integração, recrutamento e cultura.",
+    "obj_7": "Tenho facilidade para estruturar trilhas de aprendizado ou comunicar ideias de forma criativa.",
+}
+
+PERGUNTAS_DISSERTATIVAS = {
+    "diss_1": "Em um trabalho em grupo com prazo apertado e equipe desmotivada, qual papel você costuma assumir naturalmente?",
+    "diss_2": "Qual das quatro áreas (RH, Projetos, Training ou Marketing) mais chama sua atenção hoje e por quê?",
+    "diss_3": "Conte uma experiência em que você teve iniciativa para resolver um problema ou melhorar algum processo.",
+}
 
 
-df = pd.DataFrame({
-    'coluna': [1,2,3,4]
-})
+def email_valido(email: str) -> bool:
+    return bool(re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email.strip()))
 
-st.set_page_config(
-    layout="centered"
-)
-st.title("Processo Seletivo")
-nome = st.text_input("Digite seu nome:")
 
-expectativa = st.text_area("o que te motiva a entrar na Liga?")
+def salvar_csv(dados: dict, caminho: str) -> None:
+    df_novo = pd.DataFrame([dados])
+    arquivo_existe = os.path.exists(caminho)
+    df_novo.to_csv(
+        caminho,
+        mode="a",
+        header=not arquivo_existe,
+        index=False,
+        encoding="utf-8-sig",
+    )
 
-option = st.selectbox('de 1 a 5 o quanto você gosta de trabalha em grupo?', df['coluna'])
 
-nivel = st.select_slider("o quanto você é paciente", options=["Extremamente", "Muito", "Médio", "Pouco"])
-PS = st.form('processo')
-submit = PS.form_submit_button("enviar formulario")
+def resetar_inscricao() -> None:
+    """Limpa o estado de confirmação e as respostas para permitir um novo envio."""
+    st.session_state["inscricao_concluida"] = False
+    st.session_state["dados_confirmacao"] = {}
+    for chave in list(PERGUNTAS_OBJETIVAS.keys()) + list(PERGUNTAS_DISSERTATIVAS.keys()):
+        st.session_state.pop(chave, None)
 
-if submit:
-    st.write('voce escolheu:', option)
-    st.write('Sua paciência:', nivel)
-    st.write('seu nome:', nome)
+
+def exibir_tela_confirmacao(dados: dict) -> None:
+    """Renderiza a tela de confirmação substituindo o formulário."""
+    st.title("Inscrição Confirmada!")
+    st.success(
+        f"Obrigado, **{dados['nome']}**! Suas respostas foram registradas com sucesso no processo seletivo."
+    )
+
+    with st.container(border=True):
+        st.subheader("Comprovante de Inscrição")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**Nome:** {dados['nome']}")
+            st.write(f"**E-mail:** {dados['email']}")
+        with col2:
+            st.write(f"**Curso:** {dados['curso']}")
+            st.write(f"**Ano de início:** {dados['ano_inicio']}")
+
+        st.caption(f"Registrado em: {dados['data_inscricao']}")
+
+    st.info(
+        "Fique atento(a) ao e-mail cadastrado — enviaremos por lá as informações sobre as próximas etapas."
+    )
+
+    st.button(
+        "Fazer nova inscrição",
+        on_click=resetar_inscricao,
+        type="secondary",
+    )
+
+
+# --- INICIALIZAÇÃO DO ESTADO ---
+if "inscricao_concluida" not in st.session_state:
+    st.session_state["inscricao_concluida"] = False
+if "dados_confirmacao" not in st.session_state:
+    st.session_state["dados_confirmacao"] = {}
+
+# --- ROTEAMENTO ENTRE CONFIRMAÇÃO E FORMULÁRIO ---
+if st.session_state["inscricao_concluida"]:
+    exibir_tela_confirmacao(st.session_state["dados_confirmacao"])
+    st.stop()
+
+st.title("Formulário de Inscrição — Processo Seletivo")
+st.write("Preencha todos os campos obrigatórios (**\***) para concluir sua inscrição.")
+
+with st.form("form_processo_seletivo"):
+    # --- SEÇÃO 1: DADOS PESSOAIS ---
+    st.header("1. Dados Pessoais")
+    nome = st.text_input("Nome completo *")
+    email = st.text_input("E-mail *")
+    curso = st.text_input("Curso *")
+    ano_inicio = st.number_input(
+        "Ano de início na graduação *",
+        min_value=2015,
+        max_value=2026,
+        value=None,
+        step=1,
+        placeholder="Ex: 2024",
+    )
+
+    st.divider()
+
+    # --- SEÇÃO 2: QUESTIONÁRIO DE AFINIDADE (10 PERGUNTAS) ---
+    st.header("2. Questionário de Afinidade e Cultura")
+    st.caption("Nas questões de 1 a 7, responda de **1 (Discordo totalmente)** a **5 (Concordo totalmente)**.")
+
+    respostas_obj = {}
+    for idx, (chave, pergunta) in enumerate(PERGUNTAS_OBJETIVAS.items(), start=1):
+        respostas_obj[chave] = st.radio(
+            f"{idx}. {pergunta} *",
+            options=[1, 2, 3, 4, 5],
+            index=None,
+            horizontal=True,
+            key=chave,
+        )
+
+    st.divider()
+
+    respostas_diss = {}
+    for idx, (chave, pergunta) in enumerate(PERGUNTAS_DISSERTATIVAS.items(), start=8):
+        respostas_diss[chave] = st.text_area(
+            f"{idx}. {pergunta} *",
+            height=110,
+            key=chave,
+        )
+
+    enviado = st.form_submit_button("Enviar Inscrição", type="primary")
+
+if enviado:
+    erros = []
+
+    if not nome.strip():
+        erros.append("O campo **Nome completo** é obrigatório.")
+    if not email.strip():
+        erros.append("O campo **E-mail** é obrigatório.")
+    elif not email_valido(email):
+        erros.append("O **E-mail** informado não é válido.")
+    if not curso.strip():
+        erros.append("O campo **Curso** é obrigatório.")
+    if ano_inicio is None:
+        erros.append("O campo **Ano de início** é obrigatório.")
+
+    obj_faltando = [
+        idx for idx, chave in enumerate(PERGUNTAS_OBJETIVAS, start=1)
+        if respostas_obj[chave] is None
+    ]
+    if obj_faltando:
+        erros.append(f"Responda às questões objetivas obrigatórias: **{', '.join(map(str, obj_faltando))}**.")
+
+    diss_faltando = [
+        idx for idx, chave in enumerate(PERGUNTAS_DISSERTATIVAS, start=8)
+        if not respostas_diss[chave].strip()
+    ]
+    if diss_faltando:
+        erros.append(f"Responda às questões dissertativas obrigatórias: **{', '.join(map(str, diss_faltando))}**.")
+
+    if erros:
+        for erro in erros:
+            st.error(erro)
+    else:
+        registro = {
+            "data_inscricao": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "nome": nome.strip(),
+            "email": email.strip().lower(),
+            "curso": curso.strip(),
+            "ano_inicio": int(ano_inicio),
+            **respostas_obj,
+            **{k: v.strip() for k, v in respostas_diss.items()},
+        }
+
+        try:
+            salvar_csv(registro, ARQUIVO_CSV)
+            st.session_state["dados_confirmacao"] = registro
+            st.session_state["inscricao_concluida"] = True
+            st.rerun()
+        except Exception as e:
+            st.error(f"Erro ao salvar no arquivo CSV: {e}")
