@@ -1,10 +1,9 @@
-import os
 import re
 from datetime import datetime
-import pandas as pd
 import streamlit as st
 
-ARQUIVO_CSV = "inscricoes.csv"
+from core.dados import salvar_inscricao
+from score import calcular_score
 
 PERGUNTAS_OBJETIVAS = {
     "obj_1": "Gosto de ouvir pessoas, mediar conflitos e cuidar do clima de uma equipe.",
@@ -22,25 +21,32 @@ PERGUNTAS_DISSERTATIVAS = {
     "diss_3": "Conte uma experiência em que você teve iniciativa para resolver um problema ou melhorar algum processo.",
 }
 
+# Liga cada pergunta do formulário aos índices de coluna configurados em score.py (COLUNAS_AREAS)
+MAPA_FORM_PARA_SCORE = {
+    "obj_1": [32],      # RH
+    "obj_6": [37],      # RH
+    "obj_2": [33],      # Projetos
+    "obj_5": [35],      # Projetos
+    "obj_3": [36],      # Training
+    "obj_4": [34],      # Marketing
+    "obj_7": [40, 31],  # Training / Marketing
+}
+
 
 def email_valido(email: str) -> bool:
     return bool(re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email.strip()))
 
 
-def salvar_csv(dados: dict, caminho: str) -> None:
-    df_novo = pd.DataFrame([dados])
-    arquivo_existe = os.path.exists(caminho)
-    df_novo.to_csv(
-        caminho,
-        mode="a",
-        header=not arquivo_existe,
-        index=False,
-        encoding="utf-8-sig",
-    )
+def montar_respostas_score(respostas_obj: dict[str, int]) -> dict[int, int]:
+    """Converte as respostas do formulário para o dicionário {coluna: nota} de calcular_score."""
+    respostas_mapeadas: dict[int, int] = {}
+    for chave, colunas in MAPA_FORM_PARA_SCORE.items():
+        for col in colunas:
+            respostas_mapeadas[col] = respostas_obj[chave]
+    return respostas_mapeadas
 
 
 def resetar_inscricao() -> None:
-    """Limpa o estado de confirmação e as respostas para permitir um novo envio."""
     st.session_state["inscricao_concluida"] = False
     st.session_state["dados_confirmacao"] = {}
     for chave in list(PERGUNTAS_OBJETIVAS.keys()) + list(PERGUNTAS_DISSERTATIVAS.keys()):
@@ -48,7 +54,6 @@ def resetar_inscricao() -> None:
 
 
 def exibir_tela_confirmacao(dados: dict) -> None:
-    """Renderiza a tela de confirmação substituindo o formulário."""
     st.title("Inscrição Confirmada!")
     st.success(
         f"Obrigado, **{dados['nome']}**! Suas respostas foram registradas com sucesso no processo seletivo."
@@ -70,29 +75,24 @@ def exibir_tela_confirmacao(dados: dict) -> None:
         "Fique atento(a) ao e-mail cadastrado — enviaremos por lá as informações sobre as próximas etapas."
     )
 
-    st.button(
-        "Fazer nova inscrição",
-        on_click=resetar_inscricao,
-        type="secondary",
-    )
+    st.button("Fazer nova inscrição", on_click=resetar_inscricao, type="secondary")
 
 
-# --- INICIALIZAÇÃO DO ESTADO ---
+# --- CONTROLE DE ESTADO ---
 if "inscricao_concluida" not in st.session_state:
     st.session_state["inscricao_concluida"] = False
 if "dados_confirmacao" not in st.session_state:
     st.session_state["dados_confirmacao"] = {}
 
-# --- ROTEAMENTO ENTRE CONFIRMAÇÃO E FORMULÁRIO ---
 if st.session_state["inscricao_concluida"]:
     exibir_tela_confirmacao(st.session_state["dados_confirmacao"])
     st.stop()
 
+# --- FORMULÁRIO ---
 st.title("Formulário de Inscrição — Processo Seletivo")
 st.write("Preencha todos os campos obrigatórios (**\***) para concluir sua inscrição.")
 
 with st.form("form_processo_seletivo"):
-    # --- SEÇÃO 1: DADOS PESSOAIS ---
     st.header("1. Dados Pessoais")
     nome = st.text_input("Nome completo *")
     email = st.text_input("E-mail *")
@@ -108,7 +108,6 @@ with st.form("form_processo_seletivo"):
 
     st.divider()
 
-    # --- SEÇÃO 2: QUESTIONÁRIO DE AFINIDADE (10 PERGUNTAS) ---
     st.header("2. Questionário de Afinidade e Cultura")
     st.caption("Nas questões de 1 a 7, responda de **1 (Discordo totalmente)** a **5 (Concordo totalmente)**.")
 
@@ -166,6 +165,15 @@ if enviado:
         for erro in erros:
             st.error(erro)
     else:
+        # Calcula pontuação objetiva e penalizações via score.py
+        respostas_score = montar_respostas_score(respostas_obj)
+        resultado_score = calcular_score(respostas_score)
+
+        penalizacoes_fmt = "; ".join(
+            f"{p['area']} (col {p['coluna']}): {p['pontos']:g}"
+            for p in resultado_score["penalizacoes"]
+        )
+
         registro = {
             "data_inscricao": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "nome": nome.strip(),
@@ -174,12 +182,19 @@ if enviado:
             "ano_inicio": int(ano_inicio),
             **respostas_obj,
             **{k: v.strip() for k, v in respostas_diss.items()},
+            "Pontos_RH": resultado_score["pontos"]["rh"],
+            "Pontos_Projetos": resultado_score["pontos"]["projetos"],
+            "Pontos_Training": resultado_score["pontos"]["training"],
+            "Pontos_Marketing": resultado_score["pontos"]["marketing"],
+            "Area_Sugerida": resultado_score["area_sugerida"] or "Indefinida",
+            "Penalizacoes": penalizacoes_fmt,
         }
 
         try:
-            salvar_csv(registro, ARQUIVO_CSV)
+            with st.spinner("Salvando inscrição..."):
+                salvar_inscricao(registro)
             st.session_state["dados_confirmacao"] = registro
             st.session_state["inscricao_concluida"] = True
             st.rerun()
-        except Exception as e:
-            st.error(f"Erro ao salvar no arquivo CSV: {e}")
+        except Exception as erro:
+            st.error(f"Erro ao salvar inscrição na planilha: {erro}")
