@@ -221,4 +221,4 @@ if enviado:
             st.session_state["inscricao_concluida"] = True
             st.rerun()
         except Exception as erro:
-            st.error(f"Erro ao salvar inscrição na planilha: {erro
+            st.error(f"Erro ao salvar inscrição na planilha: {erro}")
