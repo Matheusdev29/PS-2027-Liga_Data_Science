@@ -2,54 +2,37 @@ import re
 from datetime import datetime
 import streamlit as st
 
-from core.dados import salvar_inscricao
+from core.dados import ler_inscricoes, salvar_inscricao
 from score import calcular_score
 
-PERGUNTAS_OBJETIVAS = {
-    "obj_1": "Gosto de ouvir pessoas, mediar conflitos e cuidar do clima de uma equipe.",
-    "obj_2": "Tenho facilidade para organizar cronogramas, cobrar prazos e acompanhar metas.",
-    "obj_3": "Gosto de estudar assuntos técnicos a fundo para ensinar e capacitar outras pessoas.",
-    "obj_4": "Tenho interesse em criação de conteúdo, identidade visual e estratégias de divulgação.",
-    "obj_5": "Prefiro resolver problemas práticos com entregas bem definidas e contato com clientes/parceiros.",
-    "obj_6": "Sinto-me motivado(a) planejando dinâmicas de integração, recrutamento e cultura.",
-    "obj_7": "Tenho facilidade para estruturar trilhas de aprendizado ou comunicar ideias de forma criativa.",
-}
+from core.perguntas import (
+    PERGUNTAS_AFINIDADE,
+    PERGUNTAS_DISSERTATIVAS,
+    PERGUNTAS_VALORES,
+    montar_respostas_score,
+)
 
-PERGUNTAS_DISSERTATIVAS = {
-    "diss_1": "Em um trabalho em grupo com prazo apertado e equipe desmotivada, qual papel você costuma assumir naturalmente?",
-    "diss_2": "Qual das quatro áreas (RH, Projetos, Training ou Marketing) mais chama sua atenção hoje e por quê?",
-    "diss_3": "Conte uma experiência em que você teve iniciativa para resolver um problema ou melhorar algum processo.",
-}
-
-# Liga cada pergunta do formulário aos índices de coluna configurados em score.py (COLUNAS_AREAS)
-MAPA_FORM_PARA_SCORE = {
-    "obj_1": [32],      # RH
-    "obj_6": [37],      # RH
-    "obj_2": [33],      # Projetos
-    "obj_5": [35],      # Projetos
-    "obj_3": [36],      # Training
-    "obj_4": [34],      # Marketing
-    "obj_7": [40, 31],  # Training / Marketing
-}
+TODAS_AS_ESCALAS = {**PERGUNTAS_VALORES, **PERGUNTAS_AFINIDADE}
 
 
 def email_valido(email: str) -> bool:
     return bool(re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email.strip()))
 
 
-def montar_respostas_score(respostas_obj: dict[str, int]) -> dict[int, int]:
-    """Converte as respostas do formulário para o dicionário {coluna: nota} de calcular_score."""
-    respostas_mapeadas: dict[int, int] = {}
-    for chave, colunas in MAPA_FORM_PARA_SCORE.items():
-        for col in colunas:
-            respostas_mapeadas[col] = respostas_obj[chave]
-    return respostas_mapeadas
+def email_ja_inscrito(email: str) -> bool:
+    """True se o e-mail já existe na planilha (sem diferenciar maiúsculas/minúsculas)."""
+    ler_inscricoes.clear()  # lê a planilha atualizada, não o cache de 30 s
+    df = ler_inscricoes()
+    if df.empty or "email" not in df.columns:
+        return False
+    emails = df["email"].astype(str).str.strip().str.lower()
+    return email.strip().lower() in set(emails)
 
 
 def resetar_inscricao() -> None:
     st.session_state["inscricao_concluida"] = False
     st.session_state["dados_confirmacao"] = {}
-    for chave in list(PERGUNTAS_OBJETIVAS.keys()) + list(PERGUNTAS_DISSERTATIVAS.keys()):
+    for chave in list(TODAS_AS_ESCALAS) + list(PERGUNTAS_DISSERTATIVAS):
         st.session_state.pop(chave, None)
 
 
@@ -90,7 +73,7 @@ if st.session_state["inscricao_concluida"]:
 
 # --- FORMULÁRIO ---
 st.title("Formulário de Inscrição — Processo Seletivo")
-st.write("Preencha todos os campos obrigatórios (**\***) para concluir sua inscrição.")
+st.write("Preencha todos os campos obrigatórios (marcados com *) para concluir sua inscrição.")
 
 with st.form("form_processo_seletivo"):
     st.header("1. Dados Pessoais")
@@ -100,7 +83,7 @@ with st.form("form_processo_seletivo"):
     ano_inicio = st.number_input(
         "Ano de início na graduação *",
         min_value=2015,
-        max_value=2026,
+        max_value=2027,
         value=None,
         step=1,
         placeholder="Ex: 2024",
@@ -108,28 +91,48 @@ with st.form("form_processo_seletivo"):
 
     st.divider()
 
-    st.header("2. Questionário de Afinidade e Cultura")
-    st.caption("Nas questões de 1 a 7, responda de **1 (Discordo totalmente)** a **5 (Concordo totalmente)**.")
+    st.header("2. Valores da Liga")
+    st.caption("Responda de **1 (Discordo totalmente)** a **5 (Concordo totalmente)**. Não existe resposta certa.")
 
-    respostas_obj = {}
-    for idx, (chave, pergunta) in enumerate(PERGUNTAS_OBJETIVAS.items(), start=1):
-        respostas_obj[chave] = st.radio(
-            f"{idx}. {pergunta} *",
+    numero = 1
+    respostas_valores = {}
+    for chave, (pergunta, _coluna) in PERGUNTAS_VALORES.items():
+        respostas_valores[chave] = st.radio(
+            f"{numero}. {pergunta} *",
             options=[1, 2, 3, 4, 5],
             index=None,
             horizontal=True,
             key=chave,
         )
+        numero += 1
 
     st.divider()
 
+    st.header("3. Afinidade com as Áreas")
+    st.caption("Mesma escala: de **1 (Discordo totalmente)** a **5 (Concordo totalmente)**.")
+
+    respostas_afinidade = {}
+    for chave, (pergunta, _coluna) in PERGUNTAS_AFINIDADE.items():
+        respostas_afinidade[chave] = st.radio(
+            f"{numero}. {pergunta} *",
+            options=[1, 2, 3, 4, 5],
+            index=None,
+            horizontal=True,
+            key=chave,
+        )
+        numero += 1
+
+    st.divider()
+
+    st.header("4. Perguntas Dissertativas")
     respostas_diss = {}
-    for idx, (chave, pergunta) in enumerate(PERGUNTAS_DISSERTATIVAS.items(), start=8):
+    for chave, pergunta in PERGUNTAS_DISSERTATIVAS.items():
         respostas_diss[chave] = st.text_area(
-            f"{idx}. {pergunta} *",
+            f"{numero}. {pergunta} *",
             height=110,
             key=chave,
         )
+        numero += 1
 
     enviado = st.form_submit_button("Enviar Inscrição", type="primary")
 
@@ -147,15 +150,19 @@ if enviado:
     if ano_inicio is None:
         erros.append("O campo **Ano de início** é obrigatório.")
 
-    obj_faltando = [
-        idx for idx, chave in enumerate(PERGUNTAS_OBJETIVAS, start=1)
-        if respostas_obj[chave] is None
+    respostas_escala = {**respostas_valores, **respostas_afinidade}
+    escala_faltando = [
+        idx for idx, chave in enumerate(TODAS_AS_ESCALAS, start=1)
+        if respostas_escala[chave] is None
     ]
-    if obj_faltando:
-        erros.append(f"Responda às questões objetivas obrigatórias: **{', '.join(map(str, obj_faltando))}**.")
+    if escala_faltando:
+        erros.append(
+            f"Responda às questões de múltipla escolha obrigatórias: **{', '.join(map(str, escala_faltando))}**."
+        )
 
+    inicio_diss = len(TODAS_AS_ESCALAS) + 1
     diss_faltando = [
-        idx for idx, chave in enumerate(PERGUNTAS_DISSERTATIVAS, start=8)
+        idx for idx, chave in enumerate(PERGUNTAS_DISSERTATIVAS, start=inicio_diss)
         if not respostas_diss[chave].strip()
     ]
     if diss_faltando:
@@ -165,9 +172,23 @@ if enviado:
         for erro in erros:
             st.error(erro)
     else:
-        # Calcula pontuação objetiva e penalizações via score.py
-        respostas_score = montar_respostas_score(respostas_obj)
-        resultado_score = calcular_score(respostas_score)
+        # Bloqueia e-mail que já se inscreveu
+        try:
+            with st.spinner("Verificando inscrição..."):
+                duplicado = email_ja_inscrito(email)
+        except Exception as erro:
+            st.error(f"Erro ao verificar a planilha: {erro}")
+            st.stop()
+
+        if duplicado:
+            st.error(
+                "Já existe uma inscrição com este e-mail. Cada pessoa pode se inscrever "
+                "apenas uma vez. Se acha que é um engano, fale com a gente:  psdatascience84@gmail.com"
+            )
+            st.stop()
+
+        # Pontuação objetiva, penalizações e fit de valores via score.py
+        resultado_score = calcular_score(montar_respostas_score(respostas_escala))
 
         penalizacoes_fmt = "; ".join(
             f"{p['area']} (col {p['coluna']}): {p['pontos']:g}"
@@ -180,7 +201,8 @@ if enviado:
             "email": email.strip().lower(),
             "curso": curso.strip(),
             "ano_inicio": int(ano_inicio),
-            **respostas_obj,
+            **respostas_valores,
+            **respostas_afinidade,
             **{k: v.strip() for k, v in respostas_diss.items()},
             "Pontos_RH": resultado_score["pontos"]["rh"],
             "Pontos_Projetos": resultado_score["pontos"]["projetos"],
@@ -188,6 +210,8 @@ if enviado:
             "Pontos_Marketing": resultado_score["pontos"]["marketing"],
             "Area_Sugerida": resultado_score["area_sugerida"] or "Indefinida",
             "Penalizacoes": penalizacoes_fmt,
+            "Fit_Valores": "Sim" if resultado_score["fit"] else "Não",
+            "Fit_Pontos": resultado_score["fit_pontos"],
         }
 
         try:
@@ -197,4 +221,4 @@ if enviado:
             st.session_state["inscricao_concluida"] = True
             st.rerun()
         except Exception as erro:
-            st.error(f"Erro ao salvar inscrição na planilha: {erro}")
+            st.error(f"Erro ao salvar inscrição na planilha: {erro

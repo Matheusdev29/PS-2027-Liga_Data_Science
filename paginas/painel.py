@@ -3,19 +3,10 @@ import pandas as pd
 import streamlit as st
 
 from core.dados import ler_inscricoes
+from core.perguntas import montar_respostas_score
 from score import calcular_score
 
 AREAS = ["RH", "Projetos", "Training", "Marketing"]
-
-MAPA_FORM_PARA_SCORE = {
-    "obj_1": [32],
-    "obj_6": [37],
-    "obj_2": [33],
-    "obj_5": [35],
-    "obj_3": [36],
-    "obj_4": [34],
-    "obj_7": [40, 31],
-}
 
 
 def verificar_autenticacao() -> bool:
@@ -61,6 +52,8 @@ def garantir_pontuacoes(df: pd.DataFrame) -> pd.DataFrame:
     if all(col in df_calc.columns for col in colunas_score):
         for col in colunas_score:
             df_calc[col] = pd.to_numeric(df_calc[col], errors="coerce").fillna(0)
+        if "Fit_Pontos" in df_calc.columns:
+            df_calc["Fit_Pontos"] = pd.to_numeric(df_calc["Fit_Pontos"], errors="coerce").fillna(0)
         if "Area_Sugerida" not in df_calc.columns:
             mapa_nomes = {
                 "Pontos_RH": "RH",
@@ -72,20 +65,17 @@ def garantir_pontuacoes(df: pd.DataFrame) -> pd.DataFrame:
         return df_calc
 
     # Fallback: calcula via calcular_score() se o CSV enviado não tiver as colunas prontas
-    resultados = []
-    for _, row in df_calc.iterrows():
-        respostas_score = {}
-        for chave, colunas in MAPA_FORM_PARA_SCORE.items():
-            if chave in df_calc.columns:
-                for col in colunas:
-                    respostas_score[col] = row[chave]
-        resultados.append(calcular_score(respostas_score))
+    resultados = [
+        calcular_score(montar_respostas_score(row.to_dict())) for _, row in df_calc.iterrows()
+    ]
 
     df_calc["Pontos_RH"] = [r["pontos"]["rh"] for r in resultados]
     df_calc["Pontos_Projetos"] = [r["pontos"]["projetos"] for r in resultados]
     df_calc["Pontos_Training"] = [r["pontos"]["training"] for r in resultados]
     df_calc["Pontos_Marketing"] = [r["pontos"]["marketing"] for r in resultados]
     df_calc["Area_Sugerida"] = [r["area_sugerida"] or "Indefinida" for r in resultados]
+    df_calc["Fit_Valores"] = ["Sim" if r["fit"] else "Não" for r in resultados]
+    df_calc["Fit_Pontos"] = [r["fit_pontos"] for r in resultados]
     return df_calc
 
 
@@ -109,6 +99,7 @@ with st.sidebar:
 
     st.divider()
     area_filtro = st.selectbox("Filtrar por Área", options=["Todas"] + AREAS)
+    fit_filtro = st.selectbox("Fit de valores", options=["Todos", "Sim", "Não"])
 
     st.divider()
     if st.button("Sair do Painel", use_container_width=True):
@@ -144,27 +135,37 @@ with st.sidebar:
         use_container_width=True,
     )
 
-# Filtro por área
+# Filtros e ordenação
 coluna_area_filtro = {
     "RH": "Pontos_RH",
     "Projetos": "Pontos_Projetos",
     "Training": "Pontos_Training",
     "Marketing": "Pontos_Marketing",
 }
+colunas_pontos = list(coluna_area_filtro.values())
+
+df_exibido = df.copy()
 
 if area_filtro != "Todas":
-    df_exibido = df[df["Area_Sugerida"] == area_filtro].sort_values(
-        by=coluna_area_filtro[area_filtro], ascending=False
-    )
+    df_exibido = df_exibido[df_exibido["Area_Sugerida"] == area_filtro]
+    df_exibido = df_exibido.sort_values(by=coluna_area_filtro[area_filtro], ascending=False)
 else:
-    df_exibido = df.copy()
+    # Sem filtro de área: ordena pela maior pontuação entre as 4 áreas
+    df_exibido = df_exibido.assign(_maior=df_exibido[colunas_pontos].max(axis=1))
+    df_exibido = df_exibido.sort_values(by="_maior", ascending=False).drop(columns="_maior")
+
+if fit_filtro != "Todos":
+    if "Fit_Valores" in df_exibido.columns:
+        df_exibido = df_exibido[df_exibido["Fit_Valores"] == fit_filtro]
+    else:
+        st.sidebar.warning("Os dados carregados não têm a coluna Fit_Valores.")
 
 # --- CONTADORES (KPIs) ---
-col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Total de Candidaturas", len(df))
-for idx, area in enumerate(AREAS, start=2):
+colunas_kpi = st.columns(5)
+colunas_kpi[0].metric("Total de Candidaturas", len(df))
+for coluna_kpi, area in zip(colunas_kpi[1:], AREAS):
     qtd_area = int((df["Area_Sugerida"] == area).sum())
-    locals()[f"col{idx}"].metric(f"Afinidade: {area}", qtd_area)
+    coluna_kpi.metric(f"Afinidade: {area}", qtd_area)
 
 st.divider()
 
@@ -180,6 +181,7 @@ colunas_tabela = [
     "curso",
     "ano_inicio",
     "data_inscricao",
+    "Fit_Valores",
     "Area_Sugerida",
     "Pontos_RH",
     "Pontos_Projetos",
@@ -198,11 +200,12 @@ st.dataframe(
         "curso": "Curso",
         "ano_inicio": "Ano de Início",
         "data_inscricao": "Data de Inscrição",
+        "Fit_Valores": "Fit de valores",
         "Area_Sugerida": "Área Sugerida",
-        "Pontos_RH": st.column_config.NumberColumn("RH (pts)", format="%.1f"),
-        "Pontos_Projetos": st.column_config.NumberColumn("Projetos (pts)", format="%.1f"),
-        "Pontos_Training": st.column_config.NumberColumn("Training (pts)", format="%.1f"),
-        "Pontos_Marketing": st.column_config.NumberColumn("Marketing (pts)", format="%.1f"),
+        "Pontos_RH": st.column_config.ProgressColumn("RH", min_value=0, max_value=15, format="%.0f/15"),
+        "Pontos_Projetos": st.column_config.ProgressColumn("Projetos", min_value=0, max_value=15, format="%.0f/15"),
+        "Pontos_Training": st.column_config.ProgressColumn("Training", min_value=0, max_value=15, format="%.0f/15"),
+        "Pontos_Marketing": st.column_config.ProgressColumn("Marketing", min_value=0, max_value=15, format="%.0f/15"),
     },
 )
 
@@ -230,6 +233,8 @@ if not df_exibido.empty:
         st.write(f"- **Projetos:** {candidato['Pontos_Projetos']} pts")
         st.write(f"- **Training:** {candidato['Pontos_Training']} pts")
         st.write(f"- **Marketing:** {candidato['Pontos_Marketing']} pts")
+        if candidato.get("Fit_Valores"):
+            st.write(f"- **Fit de valores:** {candidato['Fit_Valores']} ({candidato.get('Fit_Pontos', '-')}/50 pts)")
         if candidato.get("Penalizacoes"):
             st.warning(f"**Penalizações aplicadas:** {candidato['Penalizacoes']}")
         st.info(f"**Área Sugerida:** {candidato['Area_Sugerida']}")
