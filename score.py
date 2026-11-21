@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence
 
 # --------------------------------------------------------------------------- #
-# Estrutura do formulário (índices de coluna do collab)
+# Estrutura do formulário (índices de coluna do notebook)
 # --------------------------------------------------------------------------- #
 
 AREAS = ("rh", "projetos", "marketing", "training")
@@ -47,6 +47,7 @@ NOMES_AREAS = {
     "training": "Training",
 }
 
+NOTA_MAXIMA = 5            # escala das perguntas: 1 a 5
 MAX_PONTOS_OBJETIVOS = 15  # 3 perguntas x nota máxima 5
 
 # Colunas das perguntas objetivas por área.
@@ -159,7 +160,9 @@ def _vazio(resposta: Any) -> bool:
     if resposta is None:
         return True
     try:
-        return resposta != resposta  # NaN
+        return bool(resposta != resposta)  # NaN
+    except TypeError:
+        return True  # pd.NA: bool() é "ambíguo" -> trata como vazio
     except Exception:
         return False
 
@@ -167,12 +170,14 @@ def _vazio(resposta: Any) -> bool:
 def extrair_nota(resposta: Any) -> int:
     """Extrai o primeiro número do texto (ex.: '5 - Concordo totalmente' -> 5).
 
-    Resposta vazia/NaN ou sem número vale 0, como no notebook.
+    Resposta vazia/NaN, sem número ou com número fora da escala (maior que
+    NOTA_MAXIMA, como o '2026' de 'TESTE 2026-11-14') vale 0.
     """
     if _vazio(resposta):
         return 0
     achado = re.search(r"\d+", str(resposta))
-    return int(achado.group()) if achado else 0
+    nota = int(achado.group()) if achado else 0
+    return nota if nota <= NOTA_MAXIMA else 0
 
 
 def _resposta(respostas: dict, coluna: int) -> Any:
@@ -254,6 +259,14 @@ def _como_numero(valor: float) -> float:
     return int(valor) if float(valor).is_integer() else valor
 
 
+def colunas_usadas() -> list[int]:
+    """Todas as colunas que o cálculo lê (perguntas das áreas e dos valores)."""
+    usadas = set(COLUNAS_VALORES)
+    for colunas in COLUNAS_AREAS.values():
+        usadas.update(colunas)
+    return sorted(usadas)
+
+
 def pontos_area(respostas: dict, perguntas_da_area: Sequence[int]) -> int:
     """Soma as notas das perguntas da área (máx. 15 com 3 perguntas de escala 1-5).
 
@@ -272,15 +285,17 @@ def _aplicar_regras(
 ) -> tuple[float, list[dict]]:
     """Aplica as regras de uma área e devolve (pontos, penalizações aplicadas).
 
-    Como no notebook, a nota é limitada a >= 0 depois de cada pergunta e a
-    resposta é considerada ruim se o texto COMEÇA com o número da regra.
+    Como no notebook, a nota é limitada a >= 0 depois de cada pergunta. A resposta
+    é ruim quando a nota extraída dela (a mesma usada na soma) é igual ao número
+    da regra, então soma e penalização sempre concordam.
     """
     aplicadas: list[dict] = []
     for coluna, ruins in regras:
         resposta = _resposta(respostas, coluna)
         texto_resp = "nan" if _vazio(resposta) else str(resposta).strip()
+        nota = extrair_nota(resposta)
         for ruim in ruins:
-            if texto_resp.startswith(str(ruim)):
+            if nota == ruim:
                 pontos -= penalidade
                 aplicadas.append({
                     "area": NOMES_AREAS.get(area, area),
@@ -347,6 +362,23 @@ def fit_valores(respostas: dict, config: Optional[Config] = None) -> bool:
     return calcular_fit_valores(respostas, config)["aprovado"]
 
 
+def avisos_respostas(respostas: dict) -> list[str]:
+    """Respostas das perguntas pontuadas que valeram 0 por serem inválidas.
+
+    Inválida = tem texto, mas nenhum número de 0 a NOTA_MAXIMA (ex.: 'TESTE
+    2026-11-14' ou 'sem resposta'). Células vazias não geram aviso.
+    """
+    avisos = []
+    for coluna in colunas_usadas():
+        resposta = _resposta(respostas, coluna)
+        if _vazio(resposta) or not str(resposta).strip():
+            continue
+        achado = re.search(r"\d+", str(resposta))
+        if achado is None or int(achado.group()) > NOTA_MAXIMA:
+            avisos.append(f"coluna {coluna}: resposta inválida {str(resposta).strip()!r} (valeu 0)")
+    return avisos
+
+
 def calcular_score(respostas: dict, config: Optional[Config] = None) -> dict:
     """Resultado objetivo completo do candidato, sem LLM e sem texto.
 
@@ -361,6 +393,7 @@ def calcular_score(respostas: dict, config: Optional[Config] = None) -> dict:
                              Marketing, Training),
           "fit": bool,
           "fit_pontos": soma das perguntas de valores (0-50),
+          "avisos": respostas inválidas que valeram 0 (lista de textos),
         }
     """
     config = config or Config()
@@ -379,6 +412,7 @@ def calcular_score(respostas: dict, config: Optional[Config] = None) -> dict:
         "areas_empatadas": empatadas,
         "fit": fit["aprovado"],
         "fit_pontos": fit["pontos"],
+        "avisos": avisos_respostas(respostas),
     }
 
 
@@ -469,7 +503,14 @@ def extrair_json(conteudo: str) -> dict:
 
 
 def _contar_palavras_chave(texto_norm: str, area: str) -> int:
-    return sum(1 for p in PALAVRAS_CHAVE[area] if p in texto_norm)
+    """Quantas palavras-chave da área aparecem no texto.
+
+    A palavra-chave tem de começar uma palavra do texto (aceita "arte" em "artes",
+    mas não em "parte"); por isso prefixos como "analitic" e "colabor" funcionam.
+    """
+    return sum(
+        1 for p in PALAVRAS_CHAVE[area] if re.search(r"\b" + re.escape(p), texto_norm)
+    )
 
 
 def pontuar_areas_local(pontos: dict[str, float], texto: str, config: Config) -> dict:
@@ -666,6 +707,13 @@ def avaliar_dataframe(
     Score_Valores_Liga e Fit_Valores ("Sim"/"Não").
     """
     config = config or Config()
+    maior = max(colunas_usadas())
+    if df.shape[1] <= maior:
+        raise ValueError(
+            f"A planilha tem {df.shape[1]} colunas, mas as regras leem até a coluna {maior} "
+            "(posição, começando em 0). Confira se é a planilha certa ou ajuste "
+            "COLUNAS_AREAS / COLUNAS_VALORES em score.py."
+        )
     candidatos = [
         candidato_de_linha(list(linha), colunas_texto=colunas_texto, preprocessar=preprocessar)
         for linha in df.itertuples(index=False, name=None)
