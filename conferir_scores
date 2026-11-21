@@ -1,0 +1,185 @@
+"""Confere o score das inscrições: calcular_score x tabela de regras do README.
+
+Roda no computador, lendo a planilha de inscrições. Para cada inscrição
+calcula o score de duas formas independentes:
+
+  1. score.calcular_score (o código de verdade);
+  2. um cálculo separado, escrito aqui a partir da tabela do README (as colunas e
+     regras estão repetidas de propósito, sem importar as constantes do score.py).
+
+Se uma regra mudar só num dos lados, aparece DIVERGE. Além disso, mostra a conta
+passo a passo de algumas inscrições para você conferir à mão.
+
+Uso (na raiz do projeto, com .streamlit/secrets.toml configurado):
+
+    python conferir_scores.py                    # lê a planilha pelo core/dados.py, mostra as 3 últimas
+    python conferir_scores.py --linhas 1 4 7     # mostra as inscrições nº 1, 4 e 7
+    python conferir_scores.py --csv inscricoes.csv   # usa um CSV exportado da planilha
+
+"Inscrição nº N" = N-ésima linha de dados (a 1ª é a linha 2 da planilha, abaixo do
+cabeçalho). Só as respostas pontuadas são impressas, nunca nome ou e-mail.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from typing import Any, Optional, Sequence
+
+import score
+
+# --- Tabela do README (repetida de propósito; NÃO importar do score.py) -------- #
+AREAS_README = {
+    "RH": [32, 37, 39],
+    "Projetos": [33, 35, 43],
+    "Marketing": [31, 34, 38],
+    "Training": [36, 40, 42],
+}
+PENALIZACOES_README = [  # (área, coluna, respostas que penalizam)
+    ("RH", 32, [1]), ("RH", 37, [1]), ("RH", 39, [1]),
+    ("Projetos", 35, [1]), ("Projetos", 43, [1, 2]),
+    ("Marketing", 34, [1]), ("Marketing", 38, [1, 2]),
+    ("Training", 40, [2]), ("Training", 42, [1, 2]),
+]
+VALORES_README = [9, 10, 11, 13, 14, 15, 16, 18, 19, 20]
+DESCONTO_README = 2
+CORTE_FIT_README = 30
+# ------------------------------------------------------------------------------ #
+
+
+def _nota(texto: Any) -> int:
+    """Número da resposta ('5 - Concordo' -> 5); 0 se não houver ou passar de 5."""
+    achados = re.findall(r"\d+", "" if texto is None else str(texto))
+    n = int(achados[0]) if achados else 0
+    return n if 0 <= n <= 5 else 0
+
+
+def _celula(valores: Sequence[Any], coluna: int) -> Any:
+    return valores[coluna] if coluna < len(valores) else None
+
+
+def conferir_linha(valores: Sequence[Any]) -> dict:
+    """Cálculo independente (pela tabela do README) de uma linha da planilha."""
+    areas: dict[str, dict] = {}
+    for nome, colunas in AREAS_README.items():
+        respostas = {c: _celula(valores, c) for c in colunas}
+        pontos = sum(_nota(r) for r in respostas.values())
+        penalizacoes = []
+        for area, coluna, ruins in PENALIZACOES_README:
+            if area != nome:
+                continue
+            if _nota(respostas[coluna]) in ruins:
+                pontos -= DESCONTO_README
+                penalizacoes.append(coluna)
+            pontos = max(pontos, 0)
+        areas[nome] = {"respostas": respostas, "penalizacoes": penalizacoes, "final": pontos}
+
+    fit_pontos = sum(_nota(_celula(valores, c)) for c in VALORES_README)
+    topo = max(a["final"] for a in areas.values())
+    sugerida = next((n for n, a in areas.items() if a["final"] == topo), None) if topo > 0 else None
+    return {"areas": areas, "fit_pontos": fit_pontos, "fit": fit_pontos >= CORTE_FIT_README,
+            "area_sugerida": sugerida}
+
+
+def comparar(valores: Sequence[Any]) -> tuple[dict, dict, list[str]]:
+    """Devolve (resultado do score.py, resultado independente, lista de divergências)."""
+    respostas = score.candidato_de_linha(list(valores), colunas_texto=[])["respostas"]
+    oficial = score.calcular_score(respostas)
+    esperado = conferir_linha(valores)
+    erros = []
+    for nome, info in esperado["areas"].items():
+        chave = next(k for k, v in score.NOMES_AREAS.items() if v == nome)
+        if oficial["pontos"][chave] != info["final"]:
+            erros.append(f"{nome}: score.py={oficial['pontos'][chave]} README={info['final']}")
+    if oficial["fit_pontos"] != esperado["fit_pontos"]:
+        erros.append(f"fit_pontos: score.py={oficial['fit_pontos']} README={esperado['fit_pontos']}")
+    if oficial["fit"] != esperado["fit"]:
+        erros.append(f"fit: score.py={oficial['fit']} README={esperado['fit']}")
+    if oficial["area_sugerida"] != esperado["area_sugerida"]:
+        erros.append(f"área sugerida: score.py={oficial['area_sugerida']} README={esperado['area_sugerida']}")
+    return oficial, esperado, erros
+
+
+def relatorio(numero: int, valores: Sequence[Any]) -> tuple[str, bool]:
+    """Texto da conta passo a passo de uma inscrição e se a conferência bateu."""
+    oficial, esperado, erros = comparar(valores)
+    linhas = [f"Inscrição nº {numero} (linha {numero + 1} da planilha)"]
+    for nome, info in esperado["areas"].items():
+        partes = "  ".join(
+            f"col{c}={str(r)!r}->{_nota(r)}" for c, r in info["respostas"].items()
+        )
+        bruto = sum(_nota(r) for r in info["respostas"].values())
+        pen = f"-{DESCONTO_README * len(info['penalizacoes'])} (col {', '.join(map(str, info['penalizacoes']))})" \
+            if info["penalizacoes"] else "0"
+        linhas.append(f"  {nome:<10} {partes}")
+        linhas.append(f"  {'':<10} soma {bruto} | penalização {pen} | FINAL {info['final']}")
+    resultado = "SIM" if esperado["fit"] else "NÃO"
+    linhas.append(f"  Valores    soma {esperado['fit_pontos']}/50 (corte {CORTE_FIT_README}) -> fit {resultado}")
+    linhas.append(f"  Área sugerida: {esperado['area_sugerida'] or '(nenhuma: todas com 0)'}")
+    for aviso in oficial["avisos"][:3]:
+        linhas.append(f"  AVISO: {aviso}")
+    if len(oficial["avisos"]) > 3:
+        linhas.append(f"  AVISO: ... e mais {len(oficial['avisos']) - 3} respostas inválidas "
+                      "(linha de teste ou formulário preenchido fora da escala 1-5)")
+    linhas.append("  Conferência: " + ("OK, score.py e tabela do README concordam" if not erros
+                                       else "DIVERGE -> " + "; ".join(erros)))
+    return "\n".join(linhas), not erros
+
+
+def _ler_inscricoes(caminho_csv: Optional[str]):
+    import pandas as pd
+
+    if caminho_csv:
+        return pd.read_csv(caminho_csv, dtype=str)
+    from core import dados  # precisa do .streamlit/secrets.toml
+
+    return dados.ler_inscricoes()
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description="Confere os scores das inscrições.")
+    ap.add_argument("--csv", help="CSV exportado da planilha (padrão: ler pelo core/dados.py)")
+    ap.add_argument("--linhas", type=int, nargs="+", help="números das inscrições a detalhar")
+    ap.add_argument("-n", type=int, default=3, help="quantas das últimas detalhar (padrão 3)")
+    args = ap.parse_args(argv)
+
+    try:
+        df = _ler_inscricoes(args.csv)
+    except Exception as erro:  # secrets ausente, planilha sem acesso, CSV inexistente...
+        print(f"Não consegui ler as inscrições: {type(erro).__name__}: {erro}", file=sys.stderr)
+        return 1
+
+    maior = max(score.colunas_usadas())
+    if len(df) == 0:
+        print("Nenhuma inscrição na planilha.")
+        return 0
+    if df.shape[1] <= maior:
+        print(f"A planilha tem {df.shape[1]} colunas, mas as regras leem até a coluna {maior}. "
+              "Confira a planilha ou ajuste as colunas no score.py.", file=sys.stderr)
+        return 1
+
+    linhas = [list(l) for l in df.itertuples(index=False, name=None)]
+    escolhidas = args.linhas or list(range(max(1, len(linhas) - args.n + 1), len(linhas) + 1))
+    invalidas = [n for n in escolhidas if not 1 <= n <= len(linhas)]
+    if invalidas:
+        print(f"Inscrição(ões) inexistente(s): {invalidas}. A planilha tem {len(linhas)}.", file=sys.stderr)
+        return 1
+
+    for n in escolhidas:
+        texto, _ = relatorio(n, linhas[n - 1])
+        print(texto, end="\n\n")
+
+    ok = 0
+    for n, valores in enumerate(linhas, start=1):
+        _, _, erros = comparar(valores)
+        if erros:
+            print(f"DIVERGE na inscrição nº {n}: " + "; ".join(erros))
+        else:
+            ok += 1
+    print(f"Conferidas {len(linhas)} inscrições: {ok} OK, {len(linhas) - ok} com divergência.")
+    return 0 if ok == len(linhas) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
