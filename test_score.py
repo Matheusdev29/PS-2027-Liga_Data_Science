@@ -437,3 +437,116 @@ def test_calcular_score_concorda_com_score_candidate(candidata_marina):
     assert simples["pontos"] == completo["pontos_objetivos"]
     assert simples["penalizacoes"] == completo["penalizacoes"]
     assert simples["fit"] == completo["fit_valores"]["aprovado"]
+
+
+# --------------------------------------------------------------------------- #
+# Bugs corrigidos e conferência dos scores
+# --------------------------------------------------------------------------- #
+
+import conferir_scores
+from score import NOTA_MAXIMA, avaliar_dataframe, avisos_respostas, colunas_usadas
+
+
+def _linha(respostas, tamanho=50):
+    linha = [None] * tamanho
+    for coluna, valor in respostas.items():
+        linha[coluna] = valor
+    return linha
+
+
+def test_nota_fora_da_escala_vale_zero():
+    assert extrair_nota("5 - Concordo totalmente") == 5
+    assert extrair_nota("0") == 0
+    assert extrair_nota("6") == 0
+    assert extrair_nota("TESTE 2026-11-14 12:00:00") == 0  # o ano não pode virar nota
+
+
+def test_linha_da_pagina_de_teste_nao_estoura_a_pontuacao():
+    marca = "TESTE 2026-11-14 12:00:00"
+    respostas = {c: marca for c in colunas_usadas()}
+    r = calcular_score(respostas)
+    assert r["pontos"] == {"rh": 0, "projetos": 0, "marketing": 0, "training": 0}
+    assert r["fit_pontos"] == 0 and r["fit"] is False
+    assert r["area_sugerida"] is None
+    assert len(r["avisos"]) == len(colunas_usadas())  # cada coluna avisa
+
+
+def test_avisos_ignoram_vazias_e_respostas_validas(respostas_base):
+    respostas_base[32] = None
+    respostas_base[37] = ""
+    respostas_base[39] = float("nan")
+    assert avisos_respostas(respostas_base) == []
+
+
+def test_avisos_apontam_texto_sem_numero(respostas_base):
+    respostas_base[33] = "não sei"
+    avisos = avisos_respostas(respostas_base)
+    assert len(avisos) == 1 and "coluna 33" in avisos[0] and "não sei" in avisos[0]
+
+
+def test_penalizacao_e_soma_usam_o_mesmo_criterio():
+    respostas = {32: "Discordo totalmente (1)", 37: "5", 39: "5"}
+    r = calcular_pontos_objetivos(respostas)
+    assert r["brutos"]["rh"] == 11
+    assert r["finais"]["rh"] == 9  # a resposta "(1)" agora também é penalizada
+    assert len(r["penalizacoes"]) == 1
+
+
+def test_pd_na_conta_como_vazio():
+    pd = pytest.importorskip("pandas")
+    assert extrair_nota(pd.NA) == 0
+    r = calcular_score({32: pd.NA, 37: "5", 39: "5"})
+    assert r["pontos"]["rh"] == 10
+
+
+def test_palavra_chave_so_casa_no_comeco_da_palavra():
+    texto = score._normalizar("Quero fazer parte da equipe")
+    assert score._contar_palavras_chave(texto, "marketing") == 0       # 'arte' não está em 'parte'
+    texto = score._normalizar("Faço artes para redes sociais")
+    assert score._contar_palavras_chave(texto, "marketing") == 2       # 'arte' em 'artes' + 'redes sociais'
+
+
+def test_avaliar_dataframe_recusa_planilha_com_poucas_colunas():
+    pd = pytest.importorskip("pandas")
+    df = pd.DataFrame([["a", "b", "c"]], columns=["x", "y", "z"])
+    with pytest.raises(ValueError, match="colunas"):
+        avaliar_dataframe(df, usar_llm_padrao=False)
+
+
+def test_conferencia_concorda_com_o_score(candidata_marina):
+    oficial, esperado, erros = conferir_scores.comparar(_linha(candidata_marina))
+    assert erros == []
+    assert esperado["area_sugerida"] == "Projetos" and oficial["area_sugerida"] == "Projetos"
+    assert esperado["areas"]["Training"]["final"] == 10 and esperado["fit_pontos"] == 40
+
+
+def test_conferencia_detecta_regra_alterada_so_no_score(monkeypatch):
+    linha = _linha({c: "3" for c in colunas_usadas()} | {32: "1 - Discordo totalmente"})
+    assert conferir_scores.comparar(linha)[2] == []
+    monkeypatch.setitem(score.REGRAS_POR_AREA, "rh", [])  # alguém tira a penalização do RH
+    erros = conferir_scores.comparar(linha)[2]
+    assert any(e.startswith("RH") for e in erros)
+
+
+def test_conferir_scores_main_com_csv(tmp_path, capsys, candidata_marina):
+    pd = pytest.importorskip("pandas")
+    teste = {c: "TESTE 2026-11-14 12:00:00" for c in colunas_usadas()}
+    todos_5 = {c: "5 - Concordo totalmente" for c in colunas_usadas()}
+    caminho = tmp_path / "inscricoes.csv"
+    pd.DataFrame([_linha(candidata_marina), _linha(teste), _linha(todos_5)]).to_csv(caminho, index=False)
+
+    codigo = conferir_scores.main(["--csv", str(caminho)])
+    saida = capsys.readouterr().out
+    assert codigo == 0
+    assert "Inscrição nº 1" in saida and "Área sugerida: Projetos" in saida
+    assert "AVISO: coluna" in saida                       # a linha TESTE foi sinalizada
+    assert "FINAL 15" in saida and "fit SIM" in saida     # todos 5 -> 15 por área, fit 50
+    assert "Conferidas 3 inscrições: 3 OK, 0 com divergência." in saida
+
+
+def test_conferir_scores_main_recusa_csv_com_poucas_colunas(tmp_path, capsys):
+    pd = pytest.importorskip("pandas")
+    caminho = tmp_path / "curto.csv"
+    pd.DataFrame([["a", "b"]], columns=["x", "y"]).to_csv(caminho, index=False)
+    assert conferir_scores.main(["--csv", str(caminho)]) == 1
+    assert "colunas" in capsys.readouterr().err
